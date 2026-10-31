@@ -4,10 +4,11 @@ name: cloudstream-scheduler
 x-python-env: &python-env
   DATABASE_URL: postgresql://${POSTGRES_USER:-scheduler}:${POSTGRES_PASSWORD:-scheduler}@postgres:5432/${POSTGRES_DB:-scheduler}
   NOTIFICATION_URL: http://notification-service:8080
-  JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+  JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-change-me-0123456789}
   ADMIN_USER: ${ADMIN_USER:-admin}
   ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
   OPERATORS: ${OPERATORS:-acme_ops:acme123:acme,globex_ops:globex123:globex}
+  EMPLOYEES: ${EMPLOYEES:-acme_emp:emp123:acme}
   LOG_LEVEL: INFO
 
 x-node: &node
@@ -39,7 +40,7 @@ services:
       retries: 30
 
   api:
-    build: .                                 # the only service that builds the Python image
+    build: .
     image: cloudstream-scheduler:latest
     environment: *python-env
     ports:

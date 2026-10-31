@@ -46,12 +46,13 @@ class Settings:
     notification_url: str = os.getenv("NOTIFICATION_URL", "http://localhost:8080")
 
     # Auth
-    jwt_secret: str = os.getenv("JWT_SECRET", "dev-secret-change-me")
+    jwt_secret: str = os.getenv("JWT_SECRET", "dev-only-jwt-secret-change-me-0123456789")
     jwt_ttl_s: int = _int("JWT_TTL_S", 8 * 3600)
     admin_user: str = os.getenv("ADMIN_USER", "admin")
     admin_password: str = os.getenv("ADMIN_PASSWORD", "admin123")
     # "user:password:tenant,user:password:tenant"
     operators: str = os.getenv("OPERATORS", "acme_ops:acme123:acme,globex_ops:globex123:globex")
+    employees: str = os.getenv("EMPLOYEES", "acme_emp:emp123:acme")
 
     metrics_port: int = _int("METRICS_PORT", 9100)
     log_level: str = os.getenv("LOG_LEVEL", "INFO")

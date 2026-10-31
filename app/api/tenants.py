@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+"""Tenant controller: HTTP + auth only; rules live in TenantService."""
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, field_validator
 
-from app import repository as repo
-from app.auth import User, check_tenant, current_user, require_admin, tenant_scope
+from app.api.deps import tenant_service
+from app.auth import User, check_tenant, current_user, require_admin, require_writer, tenant_scope
 from app.core.schedule import is_valid_timezone
+from app.services import TenantService
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -22,28 +24,25 @@ class TenantIn(BaseModel):
 
 
 @router.post("", status_code=201)
-async def upsert_tenant(body: TenantIn, request: Request, _: User = Depends(require_admin)):
-    return dict(await repo.upsert_tenant(request.app.state.pool, body.id, body.timezone,
-                                         body.max_concurrency))
+async def upsert_tenant(body: TenantIn, _: User = Depends(require_admin),
+                        svc: TenantService = Depends(tenant_service)):
+    return await svc.upsert(body.id, body.timezone, body.max_concurrency)
 
 
 @router.get("")
-async def list_tenants(request: Request, user: User = Depends(current_user)):
-    return [dict(r) for r in await repo.list_tenants(request.app.state.pool, tenant_scope(user, None))]
-
-
-async def _set_paused(request: Request, tenant_id: str, user: User, paused: bool):
-    check_tenant(user, tenant_id)
-    if not await repo.set_tenant_paused(request.app.state.pool, tenant_id, paused):
-        raise HTTPException(404, "tenant not found")
-    return {"tenant_id": tenant_id, "paused": paused}
+async def list_tenants(user: User = Depends(current_user), svc: TenantService = Depends(tenant_service)):
+    return await svc.list(tenant_scope(user, None))
 
 
 @router.post("/{tenant_id}/pause")
-async def pause(tenant_id: str, request: Request, user: User = Depends(current_user)):
-    return await _set_paused(request, tenant_id, user, True)
+async def pause(tenant_id: str, user: User = Depends(require_writer),
+                svc: TenantService = Depends(tenant_service)):
+    check_tenant(user, tenant_id)
+    return await svc.set_paused(tenant_id, True)
 
 
 @router.post("/{tenant_id}/resume")
-async def resume(tenant_id: str, request: Request, user: User = Depends(current_user)):
-    return await _set_paused(request, tenant_id, user, False)
+async def resume(tenant_id: str, user: User = Depends(require_writer),
+                 svc: TenantService = Depends(tenant_service)):
+    check_tenant(user, tenant_id)
+    return await svc.set_paused(tenant_id, False)

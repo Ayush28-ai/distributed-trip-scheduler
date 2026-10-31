@@ -1,18 +1,21 @@
-"""FastAPI app: uvicorn app.main:app --host 0.0.0.0 --port 8000"""
+"""FastAPI app: uvicorn app.main:app --host 0.0.0.0 --port 8000
+Layers: controllers (app/api) -> services (app/services) -> repository (app/repository.py)."""
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from app import repository as repo
 from app.api import jobs, ops, tenants
+from app.api.deps import ops_service
 from app.auth import authenticate, issue_token
 from app.config import settings
 from app.db import create_pool
+from app.errors import install_error_handlers
 from app.log_config import setup_logging
 from app.metrics import cluster_metrics_text
+from app.services import JobService, OpsService, TenantService
 
 
 @asynccontextmanager
@@ -20,17 +23,22 @@ async def lifespan(app: FastAPI):
     setup_logging(settings.log_level)
     for _ in range(30):  # wait for Postgres
         try:
-            app.state.pool = await create_pool(settings.database_url, min_size=2, max_size=10)
+            pool = await create_pool(settings.database_url, min_size=2, max_size=10)
             break
         except Exception:
             await asyncio.sleep(2)
     else:
         raise RuntimeError("database unavailable")
+    app.state.pool = pool
+    app.state.job_service = JobService(pool, settings.num_partitions)
+    app.state.tenant_service = TenantService(pool)
+    app.state.ops_service = OpsService(pool, settings.node_dead_after_s)
     yield
-    await app.state.pool.close()
+    await pool.close()
 
 
-app = FastAPI(title="Cloudstream distributed trip scheduler", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Cloudstream distributed trip scheduler", version="1.1.0", lifespan=lifespan)
+install_error_handlers(app)
 app.include_router(tenants.router)
 app.include_router(jobs.router)
 app.include_router(ops.router)
@@ -51,13 +59,13 @@ async def login(body: LoginIn):
 
 
 @app.get("/health", tags=["ops"])
-async def health(request: Request):
-    await request.app.state.pool.fetchval("SELECT 1")
+async def health(svc: OpsService = Depends(ops_service)):
+    await svc.pool.fetchval("SELECT 1")
     return {"status": "ok"}
 
 
 @app.get("/metrics", tags=["ops"])
-async def metrics(request: Request):
+async def metrics(svc: OpsService = Depends(ops_service)):
     """Cluster-wide Prometheus metrics computed from the DB (no auth, for scrapers)."""
-    stats = await repo.stats(request.app.state.pool)
-    return Response(cluster_metrics_text(stats), media_type="text/plain; version=0.0.4")
+    return Response(cluster_metrics_text(await svc.stats(None)),
+                    media_type="text/plain; version=0.0.4")
