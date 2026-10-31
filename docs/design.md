@@ -211,10 +211,8 @@ batch (100), k = runs in flight on a node (≤ 200), P = partitions (32), N = no
 row about 150 B. 100,000 runs/day is about 75 MB/day, so finished runs need archiving
 (not built). A node holds O(k) in-flight tasks in memory.
 
-**Measured:** 100,000 jobs over 10 minutes on 3 nodes: p50 30 ms, p99 116 ms, 166 jobs/s
-(the full offered load); the README has the run on my machine. Raw claim + commit capacity
-(the concurrency test, 3 workers, one Postgres) is about 2,000 runs/s on a 2-CPU machine.
-
+**Measured:** 100,000 jobs over 10 minutes on 3 nodes: p50 31 ms, p99 118 ms, max 245 ms,
+166 jobs/s (the full offered load), 0 duplicates; machine details in the README.
 **Where it stops scaling:** the single Postgres primary. Every run costs three writes (claim,
 commit, effect) plus WAL, so a laptop-class database tops out around a few thousand runs/s,
 and connections cap the cluster at about 12 nodes (20 per node, `max_connections=300`). Under
