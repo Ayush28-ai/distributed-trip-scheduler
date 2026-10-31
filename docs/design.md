@@ -127,17 +127,105 @@ at 08:00, B's 20 are claimed in the first round (`tests/test_fairness.py`).
 | Network partition: node cut off from DB | Its runs delayed | Same as a freeze: it cannot renew, others take over, its writes are fenced |
 | Clock skew between nodes | None | All due-time and lease comparisons use the DB clock `now()` |
 | Tenant floods 50k jobs | Other tenants unaffected | Per-tenant cap + fair allocation |
+| Duplicate or out-of-order write from an old owner | None | Older fencing token: update matches 0 rows, logged as `stale_commit_rejected` |
 | Duplicate API submission | Two jobs | Not deduplicated at the API (see trade-offs) |
 
-## 6. Security and data handling
+**Takeover timing.** After a crash, a run is re-claimed once its 10 s run lease has expired
+and its partition has moved: about lease + 2 s detection. In the kill -9 test, the last of
+1,200 alerts finished 14 s after the kill, including 3 s of simulated send time.
 
-- JWT (HS256) with `admin` (all tenants) and `operator` (own tenant only) roles; every
-  endpoint is scoped, so an operator cannot read or act on another tenant's jobs.
+**Duplicate and out-of-order messages.** A duplicate send (retry, takeover, replay) carries
+the same idempotency key and is suppressed. A late, out-of-order write from an old owner
+carries an older fencing token and is rejected, whatever order it arrives in.
+
+## 6. Code structure (OOP and layering)
+
+- **Controllers** (`app/api/*`): HTTP, validation and auth only.
+- **Services** (`app/services/*`): `JobService`, `TenantService`, `OpsService` hold the
+  business rules and raise domain errors (`NotFoundError`, `ConflictError`); no HTTP, no SQL.
+- **Repository** (`app/repository.py`): all SQL in one place.
+- **Core** (`app/core/*`): pure algorithms (cron + DST, misfire, backoff, rendezvous
+  hashing, fair allocation), unit-tested without a web server or database.
+- **Polymorphism:** `JobHandler` is an abstract base class; each job type (`pickup_alert`,
+  `roster`, `billing`, `no_show`, `noop`, `flaky`) is a subclass, and the executor only
+  knows the base class. In Java, `NotificationSender` is an interface with a
+  `LogNotificationSender` implementation, behind a controller → service → repository stack.
+- **Encapsulation:** each node loop is a class owning its state (`Membership` hides
+  partition validity behind `owned`; `Executor` owns the in-flight set and lease renewal).
+
+## 7. Security and data handling
+
+- JWT (HS256), three roles, every endpoint tenant-scoped:
+
+  | Role | Scope | Can |
+  |---|---|---|
+  | admin | all tenants | everything, create tenants, see the cluster |
+  | operator | own tenant | create/trigger jobs, pause/resume, replay dead letters, read |
+  | employee | own tenant | read only: jobs, runs, next fire times, stats |
+
+  Tenant isolation is enforced in the controllers and tested (`tests/test_api_security.py`).
+- **Errors never leak:** every error is `{"error": code, "message": text}`. Validation
+  errors list field names and messages but never echo submitted values. Unexpected
+  errors return a generic message plus a request id; details go to the logs only.
 - Logs are JSON and pass through a PII scrubber; handlers log ids only, never names,
   phone numbers or addresses. The Spring sender logs tenant, trip id, token and node only.
 - Secrets come from environment variables (`.env`, not committed).
 
-## 7. Trade-offs and what I would do next
+## 8. Caching and staleness
+
+| Cached | Where | Eviction | What can be stale | Bound |
+|---|---|---|---|---|
+| Tenant config (paused flag, concurrency cap) | each node's dispatcher, in memory | TTL 2 s (`TENANT_CACHE_TTL_S`), full reload | a paused tenant may still be dispatched; a changed cap applies late | ≤ 2 s after the change |
+| Partition ownership | each node's `Membership` | refreshed every 2 s; treated as empty 8 s after the last successful renewal | a node may scan a partition it just lost | safe anyway: row-level claim + fencing |
+
+Nothing that decides correctness is cached: due times, run ownership and fencing tokens
+are always read from the database.
+
+## 9. Monitoring
+
+Each node exposes Prometheus metrics on :9100: `scheduler_fire_lag_seconds` (histogram),
+claimed/succeeded/failed (by outcome) counters, `scheduler_stale_commits_rejected_total`,
+`scheduler_leases_lost_total`, `scheduler_runs_reclaimed_total`, `scheduler_misfire_skipped_total`,
+in-flight and owned-partition gauges. The API's `/metrics` adds cluster-wide gauges from the
+database: runs by status, running, retrying, dead letters, **queue depth** (due but unclaimed),
+**oldest due age**, **error rate** (last 10 min) and fire-lag p50/p95/p99. At 3 AM, a rising
+queue depth or oldest-due age says the cluster is falling behind; rising stale rejections or
+reclaims say nodes are crashing or pausing.
+
+## 10. Cost: time, space and where it stops scaling
+
+Notation: D = runs due now in a node's partitions, T = tenants with due work, B = claim
+batch (100), k = runs in flight on a node (≤ 200), P = partitions (32), N = nodes.
+
+| Operation | Time | Notes |
+|---|---|---|
+| Claim, per tenant per tick | O(d_t log B) | index range scan on (tenant, next_attempt_at) + top-B sort; `SKIP LOCKED`, no waiting |
+| Due count per tick | O(D) | partial index on due rows only |
+| Fair allocation | O(T) per round, ≤ T rounds | pure Python; T is tens |
+| Fenced commit | O(log n) | primary-key update + one insert, one transaction |
+| Lease renewal | O(k log n) | one UPDATE for all in-flight runs |
+| Partition assignment | O(P · N) hashes | 96 SHA-1s per heartbeat for 3 nodes |
+| Cron materialization | O(firings in horizon) | DST gap resolution ≤ 60 one-minute steps |
+
+**Space:** a `job_runs` row is about 250 B, about 600 B with its five indexes; an `effects`
+row about 150 B. 100,000 runs/day is about 75 MB/day, so finished runs need archiving
+(not built). A node holds O(k) in-flight tasks in memory.
+
+**Measured:** 100,000 jobs over 10 minutes on 3 nodes: p50 30 ms, p99 116 ms, 166 jobs/s
+(the full offered load); the README has the run on my machine. Raw claim + commit capacity
+(the concurrency test, 3 workers, one Postgres) is about 2,000 runs/s on a 2-CPU machine.
+
+**Where it stops scaling:** the single Postgres primary. Every run costs three writes (claim,
+commit, effect) plus WAL, so a laptop-class database tops out around a few thousand runs/s,
+and connections cap the cluster at about 12 nodes (20 per node, `max_connections=300`). Under
+a large backlog the per-tick due count grows linearly. Next steps, in order: batch commits,
+PgBouncer, time-partitioned `job_runs`, then sharding partitions across several databases.
+
+## 11. Trade-offs and what I would do next
+
+- **Consistency over availability:** if Postgres is unreachable, nothing fires rather than
+  risking duplicates. Latency is bought with polling (100 ms dispatcher tick), not with
+  weaker guarantees.
 
 - **Postgres as coordinator** instead of etcd/ZooKeeper: fewer moving parts, one clock;
   the DB is the ceiling. Next: read replicas for the API, partitioned `job_runs` tables,

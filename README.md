@@ -46,6 +46,10 @@ Streamlit / curl ─► FastAPI API ─► PostgreSQL ◄── node1, node2, no
 - **Misfires:** `FIRE_NOW`, `SKIP`, `COALESCE` per job.
 - **Time zones + DST:** cron evaluated in the tenant's zone; explicit gap/overlap rules.
 - **Clock skew:** all due-time and lease checks use the DB clock.
+- **Monitoring:** fire-lag histogram, queue depth, oldest due age, error rate, retries,
+  stale-write rejections ([design.md §9](docs/design.md#9-monitoring)).
+- **Caching:** tenant config cached 2 s, staleness bounded ([§8](docs/design.md#8-caching-and-staleness)).
+- **Cost:** time/space complexity and where it stops scaling ([§10](docs/design.md#10-cost-time-space-and-where-it-stops-scaling)).
 
 ## API (all need `Authorization: Bearer <token>` except login, health, metrics)
 
@@ -70,8 +74,9 @@ curl -s localhost:8000/stats "${H[@]}"
 curl -s localhost:8000/cluster "${H[@]}"
 ```
 
-Roles: `admin` sees all tenants; operators (`acme_ops`/`acme123`, `globex_ops`/`globex123`)
-see and act on their own tenant only. Job types: `pickup_alert` (calls the Spring service),
+Roles: `admin` (`admin`/`admin123`) sees and does everything; operators (`acme_ops`/`acme123`,
+`globex_ops`/`globex123`) act on their own tenant only; employees (`acme_emp`/`emp123`) can only
+read their own tenant. Errors are always `{"error", "message"}` and never echo request data. Job types: `pickup_alert` (calls the Spring service),
 `roster`, `billing`, `no_show`, `noop`, `flaky` (fails with `payload.fail_rate`, for
 retry/dead-letter demos).
 
@@ -93,6 +98,7 @@ docker compose up -d --build           # failure tests need the full stack
 | `test_concurrency.py` | 3 dispatchers racing for 10,000 runs (all claiming every partition): each run claimed once, 10,000 effects, 0 duplicates |
 | `test_fencing.py` | stale owner's renew/commit/fail all rejected after takeover; retry → dead letter → replay |
 | `test_fairness.py` | 50,000 vs 20 due runs: the small tenant is fully served in round one; tenant cap and pause honoured |
+| `test_api_security.py` | 3 roles, tenant isolation, employee read-only, errors never echo payloads (no DB needed) |
 | `NotificationServiceTest` (Java) | repeated idempotency key sends nothing (runs during the Docker build) |
 | `kill9.sh` | crash during 1,200 alerts: nothing lost, nothing sent twice |
 | `sigstop.sh` | 30 s freeze: stale writes rejected, every alert sent once |
@@ -128,7 +134,7 @@ The script prints a markdown report and saves it under `bench/results/`.
 
 ## Trade-offs
 
-See [docs/design.md](docs/design.md#7-trade-offs-and-what-i-would-do-next). In short:
+See [docs/design.md](docs/design.md#11-trade-offs-and-what-i-would-do-next). In short:
 Postgres as the only coordinator (simple, one clock, DB is the ceiling); Python core for
 delivery speed, Spring Boot for the side-effect service; a soft tenant cap to avoid a hot
 counter row; fixed 32 partitions.
@@ -138,9 +144,9 @@ counter row; fixed 32 partitions.
 ```
 app/core/        pure logic: schedule (cron + DST), misfire, backoff, partitioning, fairness
 app/scheduler/   node loops: membership, materializer, dispatcher, executor
-app/repository.py  all SQL (claim, fenced commit, reclaim, dead letters)
+app/api/         controllers (HTTP + auth)  ->  app/services/  business rules  ->  app/repository.py  all SQL
 app/handlers/    job types (polymorphic JobHandler)
-app/api/         FastAPI routers;  app/auth.py JWT;  app/metrics.py Prometheus
+app/auth.py      JWT roles;  app/errors.py error framework;  app/metrics.py Prometheus
 notification-service/  Spring Boot idempotent notification sink
 ui/              Streamlit console
 tests/           unit, concurrency, fencing, fairness, failure scripts
