@@ -114,15 +114,26 @@ Fire lag = time a node claimed the run minus its scheduled time, on the DB clock
 The script prints a markdown report and saves it under `bench/results/`.
 
 <!-- Paste your bench/results/*.md output here -->
+**Result: PASS.** 100,000 jobs due within 10 minutes on 3 nodes, p99 fire lag 118 ms (target < 2 s).
+
+- Machine: 16 CPUs, 6.7 GB RAM (WSL2 memory limit), Windows + WSL2 (Linux 6.18), Docker Desktop.
+  All services ran in Docker (Python 3.12, PostgreSQL 16); the benchmark client ran on the host (Python 3.10).
+- Load: 100,000 jobs due uniformly over 600 s (~167 jobs/s offered), 10 tenants, 3 scheduler nodes.
+
 | metric | value |
 |---|---|
-| machine | _fill in_ |
-| jobs / window / nodes | 100,000 / 600 s / 3 |
-| fire lag p50 | _fill in_ |
-| fire lag p99 | _fill in_ |
-| throughput | _fill in_ |
-| duplicate effects | _fill in_ |
+| succeeded | 100,000 / 100,000 |
+| fire lag p50 | 31 ms |
+| fire lag p95 | 104 ms |
+| fire lag p99 | 118 ms |
+| fire lag max | 245 ms |
+| runs with lag > 2 s | 0 |
+| throughput (completed / span) | 166 jobs/s (the full offered rate) |
+| duplicate effects | 0 |
 
+The backlog of due-but-unclaimed runs stayed between 0 and 20 for the whole run, so the
+cluster was never the bottleneck. Raw claim + commit capacity is about 2,000 runs/s
+(see the cost section of docs/design.md).
 ## Assumptions
 
 - A "firing" is identified by (job, scheduled instant); manual triggers are new firings.
