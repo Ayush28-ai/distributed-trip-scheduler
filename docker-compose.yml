@@ -1,0 +1,96 @@
+# docker compose up --build   -> postgres, api, node1-3, notification-service, ui
+name: cloudstream-scheduler
+
+x-python-env: &python-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:-scheduler}:${POSTGRES_PASSWORD:-scheduler}@postgres:5432/${POSTGRES_DB:-scheduler}
+  NOTIFICATION_URL: http://notification-service:8080
+  JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+  ADMIN_USER: ${ADMIN_USER:-admin}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+  OPERATORS: ${OPERATORS:-acme_ops:acme123:acme,globex_ops:globex123:globex}
+  LOG_LEVEL: INFO
+
+x-node: &node
+  image: cloudstream-scheduler:latest        # built once by the api service
+  pull_policy: never
+  command: ["python", "-m", "app.node"]      # exec form: python is PID 1 and gets the signals
+  restart: "no"                              # a killed node stays dead during failure tests
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-scheduler}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scheduler}
+      POSTGRES_DB: ${POSTGRES_DB:-scheduler}
+    command: ["postgres", "-c", "max_connections=300"]
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scheduler} -d ${POSTGRES_DB:-scheduler}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build: .                                 # the only service that builds the Python image
+    image: cloudstream-scheduler:latest
+    environment: *python-env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  node1:
+    <<: *node
+    environment: {<<: *python-env, NODE_ID: node1}
+    ports: ["9101:9100"]
+  node2:
+    <<: *node
+    environment: {<<: *python-env, NODE_ID: node2}
+    ports: ["9102:9100"]
+  node3:
+    <<: *node
+    environment: {<<: *python-env, NODE_ID: node3}
+    ports: ["9103:9100"]
+
+  notification-service:
+    build: ./notification-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-scheduler}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-scheduler}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-scheduler}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ui:
+    image: cloudstream-scheduler:latest
+    pull_policy: never
+    command: ["streamlit", "run", "ui/streamlit_app.py", "--server.port=8501",
+              "--server.address=0.0.0.0", "--server.headless=true"]
+    environment:
+      API_URL: http://api:8000
+      NOTIFICATION_URL: http://notification-service:8080
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:

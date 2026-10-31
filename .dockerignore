@@ -1,0 +1,12 @@
+.git
+.venv
+venv
+.idea
+__pycache__
+*.pyc
+.pytest_cache
+notification-service
+tests
+bench
+docs
+.env
