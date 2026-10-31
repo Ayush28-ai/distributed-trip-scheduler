@@ -53,7 +53,7 @@ with st.sidebar:
                 st.rerun()
             else:
                 st.error("Bad credentials")
-        st.caption("Demo: admin/admin123, acme_ops/acme123, globex_ops/globex123")
+        st.caption("Demo: admin/admin123, acme_ops/acme123 (operator), acme_emp/emp123 (employee)")
         st.stop()
     st.success(f"{st.session_state.user} ({st.session_state.role}, tenant {st.session_state.tenant})")
     if st.button("Sign out"):
@@ -62,6 +62,9 @@ with st.sidebar:
     st.button("Refresh data")
 
 st.title("Cloudstream distributed trip scheduler")
+CAN_WRITE = st.session_state.role in ("admin", "operator")
+if not CAN_WRITE:
+    st.info("Employee view: read-only.")
 tabs = st.tabs(["Overview", "Tenants", "Jobs", "Runs", "Dead letters", "Notifications"])
 
 # ---------------------------------------------------------------- overview
@@ -77,13 +80,17 @@ with tabs[0]:
         c[3].metric("Done last 60s", stats["succeeded_last_60s"])
         c[4].metric("Fire lag p50 (ms)", lag["p50"] if lag["p50"] is not None else "-")
         c[5].metric("Fire lag p99 (ms)", lag["p99"] if lag["p99"] is not None else "-")
+        d = st.columns(3)
+        d[0].metric("Queue depth (due, unclaimed)", stats["queue_depth"])
+        d[1].metric("Oldest due run (s)", stats["oldest_due_age_s"])
+        d[2].metric("Error rate, 10 min", f"{stats['error_rate_last_10m'] * 100:.1f}%")
         st.caption(f"Fire lag over {lag['samples']} runs started in the last 10 minutes")
         st.subheader("Runs by status")
         if stats["runs_by_status"]:
             st.bar_chart(pd.Series(stats["runs_by_status"], name="runs"))
-    st.subheader("Cluster: nodes and partition leases")
-    nodes = call("GET", "/cluster")
+    nodes = call("GET", "/cluster") if st.session_state.role == "admin" else None
     if nodes:
+        st.subheader("Cluster: nodes and partition leases")
         table([{**n, "partition_count": len(n["partitions"]),
                 "partitions": ", ".join(map(str, n["partitions"]))} for n in nodes],
               ["node_id", "alive", "heartbeat_age_s", "partition_count", "partitions"])
@@ -96,10 +103,10 @@ with tabs[1]:
     for t in tenants:
         col1, col2, col3 = st.columns([3, 1, 1])
         col1.write(f"**{t['id']}** ({t['timezone']}) {'- paused' if t['paused'] else ''}")
-        if col2.button("Pause", key=f"p-{t['id']}", disabled=t["paused"]):
+        if col2.button("Pause", key=f"p-{t['id']}", disabled=t["paused"] or not CAN_WRITE):
             call("POST", f"/tenants/{t['id']}/pause")
             st.rerun()
-        if col3.button("Resume", key=f"r-{t['id']}", disabled=not t["paused"]):
+        if col3.button("Resume", key=f"r-{t['id']}", disabled=not t["paused"] or not CAN_WRITE):
             call("POST", f"/tenants/{t['id']}/resume")
             st.rerun()
     if st.session_state.role == "admin":
@@ -134,7 +141,7 @@ with tabs[2]:
         attempts = c9.number_input("Max attempts", 1, 20, 5)
         misfire = c10.selectbox("Misfire policy", ["FIRE_NOW", "SKIP", "COALESCE"])
         payload_txt = st.text_input("Payload JSON", '{"trip_id": "T-100", "simulate_ms": 0}')
-        if st.form_submit_button("Create job", type="primary"):
+        if st.form_submit_button("Create job", type="primary", disabled=not CAN_WRITE):
             body = {"tenant_id": tenant_id, "name": name, "job_type": job_type, "priority": priority,
                     "max_runtime_s": int(max_runtime), "max_attempts": int(attempts),
                     "misfire_policy": misfire, "payload": json.loads(payload_txt or "{}")}
@@ -159,7 +166,7 @@ with tabs[2]:
             nf = call("GET", f"/jobs/{jid}/next-fire-times", params={"n": 5})
             if nf:
                 st.json(nf)
-        if c2.button("Trigger now"):
+        if c2.button("Trigger now", disabled=not CAN_WRITE):
             r = call("POST", f"/jobs/{jid}/trigger")
             if r:
                 st.success(f"Run {r['run_id']} created")
@@ -179,7 +186,7 @@ with tabs[4]:
     table(dls, ["id", "run_id", "tenant_id", "name", "job_type", "attempts", "last_error", "failed_at"])
     if dls:
         dl_id = st.selectbox("Dead letter", [d["id"] for d in dls])
-        if st.button("Replay", type="primary"):
+        if st.button("Replay", type="primary", disabled=not CAN_WRITE):
             r = call("POST", f"/dead-letters/{dl_id}/replay")
             if r:
                 st.success(f"Run {r['run_id']} re-queued")

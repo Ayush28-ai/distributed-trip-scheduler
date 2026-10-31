@@ -321,6 +321,18 @@ async def stats(db, tenant_id: str | None = None) -> dict:
     dead_pending = await db.fetchval(
         """SELECT count(*) FROM dead_letters WHERE replayed_at IS NULL
               AND ($1::text IS NULL OR tenant_id = $1)""", tenant_id)
+    queue = await db.fetchrow(
+        """SELECT count(*) AS depth,
+                  COALESCE(EXTRACT(EPOCH FROM now() - min(next_attempt_at)), 0)::float AS oldest_s
+             FROM job_runs
+            WHERE status IN ('SCHEDULED','RETRY_WAIT') AND next_attempt_at <= now()
+              AND ($1::text IS NULL OR tenant_id = $1)""", tenant_id)
+    errors = await db.fetchrow(
+        """SELECT count(*) AS started,
+                  count(*) FILTER (WHERE last_error IS NOT NULL AND status <> 'SKIPPED') AS with_error
+             FROM job_runs
+            WHERE started_at > now() - interval '10 minutes'
+              AND ($1::text IS NULL OR tenant_id = $1)""", tenant_id)
     by_status = {r["status"]: r["n"] for r in counts}
     return {
         "runs_by_status": by_status,
@@ -328,6 +340,9 @@ async def stats(db, tenant_id: str | None = None) -> dict:
         "retrying": by_status.get("RETRY_WAIT", 0),
         "dead": by_status.get("DEAD", 0),
         "dead_letters_pending": dead_pending,
+        "queue_depth": queue["depth"],                      # due now, not yet claimed
+        "oldest_due_age_s": round(queue["oldest_s"], 1),
+        "error_rate_last_10m": round(errors["with_error"] / errors["started"], 4) if errors["started"] else 0.0,
         "succeeded_last_60s": done_1m,
         "fire_lag_ms_last_10m": {k: (round(lag[k], 1) if lag[k] is not None else None)
                                  for k in ("p50", "p95", "p99", "max")} | {"samples": lag["n"]},

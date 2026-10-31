@@ -27,6 +27,11 @@ def cluster_metrics_text(stats: dict) -> bytes:
     Gauge("cluster_running_jobs", "Runs RUNNING", registry=reg).set(stats["running"])
     Gauge("cluster_retrying_jobs", "Runs RETRY_WAIT", registry=reg).set(stats["retrying"])
     Gauge("cluster_dead_letters", "Dead letters not replayed", registry=reg).set(stats["dead_letters_pending"])
+    Gauge("cluster_queue_depth", "Runs due now and not yet claimed", registry=reg).set(stats["queue_depth"])
+    Gauge("cluster_oldest_due_age_seconds", "Age of the oldest unclaimed due run",
+          registry=reg).set(stats["oldest_due_age_s"])
+    Gauge("cluster_error_rate_10m", "Share of runs started in the last 10 min that hit an error",
+          registry=reg).set(stats["error_rate_last_10m"])
     lag = Gauge("cluster_fire_lag_ms", "Fire lag percentiles, last 10 min", ["quantile"], registry=reg)
     for q in ("p50", "p95", "p99", "max"):
         if stats["fire_lag_ms_last_10m"][q] is not None:
