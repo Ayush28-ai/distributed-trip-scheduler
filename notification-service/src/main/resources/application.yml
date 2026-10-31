@@ -10,6 +10,9 @@ spring:
     password: ${SPRING_DATASOURCE_PASSWORD:scheduler}
     hikari:
       maximum-pool-size: 20
+  mvc:
+    servlet:
+      load-on-startup: 1          # initialise the web layer at startup
   jpa:
     hibernate:
       ddl-auto: none          # schema.sql owns the schema

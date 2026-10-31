@@ -198,12 +198,12 @@ with tabs[5]:
     st.caption("Read from the Spring Boot notification-service. total == distinct keys means no alert was sent twice.")
     nt = st.selectbox("Tenant ", tenant_ids, key="nt")
     try:
-        s = requests.get(f"{NOTIFY}/notifications/stats", params={"tenantId": nt}, timeout=5).json()
+        s = requests.get(f"{NOTIFY}/notifications/stats", params={"tenantId": nt}, timeout=20).json()
         c1, c2, c3 = st.columns(3)
         c1.metric("Notifications", s["total"])
         c2.metric("Distinct idempotency keys", s["distinctKeys"])
         c3.metric("Duplicates", s["total"] - s["distinctKeys"])
-        rows = requests.get(f"{NOTIFY}/notifications", params={"tenantId": nt, "limit": 200}, timeout=5).json()
+        rows = requests.get(f"{NOTIFY}/notifications", params={"tenantId": nt, "limit": 200}, timeout=20).json()
         table(rows)
     except Exception as e:
         st.warning(f"notification-service not reachable yet: {e}")
